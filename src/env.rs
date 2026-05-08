@@ -439,6 +439,23 @@ pub static PATH_NON_PRISTINE: Lazy<Vec<PathBuf>> = Lazy::new(|| match var(&*PATH
     Err(_) => vec![],
 });
 pub static DIRENV_DIFF: Lazy<Option<String>> = Lazy::new(|| var("DIRENV_DIFF").ok());
+pub static TERMUX: Lazy<bool> = Lazy::new(|| {
+    var("TERMUX_VERSION").is_ok() || HOME.to_string_lossy().contains("/com.termux/")
+});
+pub const TERMUX_PATCH_SCRIPT: &str = r#"
+            unset LD_PRELOAD
+            export PATH="/data/data/com.termux/files/usr/glibc/bin:$PATH"
+            for target in "$@"; do
+                [ -z "$target" ] && continue
+                [ ! -e "$target" ] && continue
+                if command -v termux-shebang-fix >/dev/null 2>&1; then
+                    termux-shebang-fix "$target" >/dev/null 2>&1 || true
+                fi
+                if command -v autopatchelf >/dev/null 2>&1; then
+                    autopatchelf "$target" >/dev/null 2>&1 || true
+                fi
+            done
+"#;
 
 /// GitHub token resolved from environment variables ONLY
 /// (`MISE_GITHUB_TOKEN`, `GITHUB_API_TOKEN`, `GITHUB_TOKEN`).

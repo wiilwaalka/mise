@@ -90,6 +90,15 @@ where
     let program = program.to_executable();
     let args: Vec<OsString> = args.into_iter().map(Into::<OsString>::into).collect();
 
+    #[cfg(target_os = "linux")]
+    {
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+        patch_if_termux(&program, &args_str);
+    }
+
     let display_name = program.to_string_lossy();
     let display_args = args
         .iter()
@@ -99,7 +108,7 @@ where
     let display_command = [display_name.into(), display_args].join(" ");
     debug!("$ {display_command}");
 
-    duct::cmd(program, args)
+    duct::cmd(program, args).env_remove("LD_PRELOAD")
 }
 
 pub struct CmdLineRunner<'a> {
@@ -296,6 +305,7 @@ impl<'a> CmdLineRunner<'a> {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.env_remove("LD_PRELOAD");
 
         Self {
             cmd,
@@ -722,6 +732,11 @@ impl<'a> CmdLineRunner<'a> {
     /// This can happen on Linux when executing a binary that was just written/extracted,
     /// as the file descriptor may not be fully closed yet.
     fn spawn_with_etxtbsy_retry(&mut self) -> std::io::Result<std::process::Child> {
+        #[cfg(target_os = "linux")]
+        {
+            let args: Vec<String> = self.cmd.get_args().map(|s| s.to_string_lossy().to_string()).collect();
+            patch_if_termux(self.get_program(), &args);
+        }
         let mut attempt = 0;
         loop {
             match self.cmd.spawn() {
@@ -834,7 +849,6 @@ impl<'a> CmdLineRunner<'a> {
         Ok(())
     }
 
-    #[cfg(unix)]
     fn is_etxtbsy(err: &std::io::Error) -> bool {
         err.raw_os_error() == Some(nix::errno::Errno::ETXTBSY as i32)
     }
@@ -935,6 +949,108 @@ impl<'a> CmdLineRunner<'a> {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn patch_if_termux<P: AsRef<std::path::Path>, S: AsRef<str>>(program: P, args: &[S]) {
+    use crate::dirs;
+    if !*env::TERMUX {
+        return;
+    }
+    let mut paths = vec![std::path::PathBuf::from(program.as_ref())];
+    for arg in args {
+        paths.push(std::path::PathBuf::from(arg.as_ref()));
+    }
+
+    for program_path in paths {
+        let mut program_path = program_path;
+        if let Ok(path) = program_path.strip_prefix("~") {
+            program_path = dirs::HOME.join(path);
+        }
+        if !program_path.is_absolute() {
+            if let Ok(path) = which::which(&program_path) {
+                program_path = path;
+            }
+        }
+        let path_str = program_path.to_string_lossy();
+
+        // Define patterns and how many subdirectories to include for the root
+        let patterns = [
+            ("installs/", 2),   // .../installs/plugin/version
+            ("plugins/", 1),    // .../plugins/plugin
+            ("cache/mise/", 2), // .../cache/mise/plugin/repo
+            ("share/mise/", 2), // .../share/mise/installs/plugin/version
+            (".rustup/toolchains/", 1),
+            (".cargo/bin", 0),
+        ];
+
+        let mut patch_root = None;
+        for (pattern, sub_count) in patterns {
+            if let Some(idx) = path_str.find(pattern) {
+                let after = &path_str[idx + pattern.len()..];
+                let parts: Vec<&str> = after.split('/').collect();
+                if parts.len() >= sub_count {
+                    let mut root = std::path::PathBuf::from(&path_str[..idx + pattern.len()]);
+                    for i in 0..sub_count {
+                        root.push(parts[i]);
+                    }
+                    if root.exists() {
+                        patch_root = Some(root);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(dir) = patch_root {
+            let mut dir = dir;
+            if dir.is_file() {
+                dir = dir.parent().unwrap_or(&dir).to_path_buf();
+            }
+            let marker = dir.join(".mise-glibc-patched-v4");
+            if !dir.exists() {
+                continue;
+            }
+
+            let mut needs_patch = !marker.exists();
+            if !needs_patch {
+                if let (Ok(m_meta), Ok(p_meta)) = (marker.metadata(), program_path.metadata()) {
+                    if let (Ok(m_time), Ok(p_time)) = (m_meta.modified(), p_meta.modified()) {
+                        if p_time > m_time {
+                            needs_patch = true;
+                        }
+                    }
+                }
+            }
+
+            if needs_patch {
+                let needs_recursive = !marker.exists();
+                if needs_recursive {
+                    trace!("Termux: glibc-patching {}...", dir.display());
+                }
+
+                let status = std::process::Command::new("sh")
+                    .env_remove("LD_PRELOAD")
+                    .arg("-c")
+                    .arg(env::TERMUX_PATCH_SCRIPT)
+                    .arg("--")
+                    .arg(&program_path) // Always patch the specific file
+                    .args(if needs_recursive { vec![dir.as_os_str()] } else { vec![] })
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+
+                if let Ok(s) = status {
+                    if s.success() {
+                        let _ = std::fs::File::create(&marker);
+                        if needs_recursive {
+                            trace!("Termux: patching complete.");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Display for CmdLineRunner<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let args = self.get_args().join(" ");
@@ -978,10 +1094,14 @@ where
     let display_args = args.join(" ");
     debug!("$ {program} {display_args}");
 
+    #[cfg(target_os = "linux")]
+    patch_if_termux(program, args);
+
     let output = tokio::process::Command::new(program)
         .args(args)
         .env_clear()
         .envs(env)
+        .env_remove("LD_PRELOAD")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1021,9 +1141,13 @@ where
     let display_args = args.join(" ");
     debug!("$ {program} {display_args}");
 
+    #[cfg(target_os = "linux")]
+    patch_if_termux(program, args);
+
     let output = tokio::process::Command::new(program)
         .args(args)
         .envs(extra_env)
+        .env_remove("LD_PRELOAD")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

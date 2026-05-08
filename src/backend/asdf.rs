@@ -373,6 +373,7 @@ impl Backend for AsdfBackend {
             ctx.pr.set_message("bin/download".into());
             run_script(&Download)?;
         }
+        self.run_hook(ctx, &tv, "prebuild").await?;
         ctx.pr.set_message("bin/install".into());
         run_script(&Install)?;
         file::remove_dir(&self.ba.downloads_path)?;

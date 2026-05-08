@@ -308,6 +308,10 @@ where
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+
+    #[cfg(target_os = "linux")]
+    crate::cmd::patch_if_termux(&program, &args_str);
+
     if let Some(sandboxed) = sandbox.apply(&program.to_string_lossy(), &args_str).await? {
         // macOS: exec through sandbox-exec
         let err = exec::Command::new(&sandboxed.program)

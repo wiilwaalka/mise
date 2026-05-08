@@ -5,6 +5,7 @@ use indexmap::IndexMap;
 // install_env is a named field on ToolVersionOptions (serde puts it in self.install_env),
 // but parse_tool_options() can still place it in opts, so we filter it here as well.
 pub const EPHEMERAL_OPT_KEYS: &[&str] = &[
+    "prebuild",
     "postinstall",
     "install_env",
     "depends",

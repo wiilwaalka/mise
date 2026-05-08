@@ -606,11 +606,12 @@ impl Backend for NodePlugin {
         } else {
             self.install_precompiled(ctx, &mut tv, &opts).await?;
         }
-        debug!("{:?}: checking installation is working as expected", self);
-        self.test_node(&ctx.config, &tv, ctx.pr.as_ref()).await?;
         if !cfg!(windows) {
             self.install_npm_shim(&tv)?;
         }
+        self.run_termux_patch(ctx, &tv).await?;
+        debug!("{:?}: checking installation is working as expected", self);
+        self.test_node(&ctx.config, &tv, ctx.pr.as_ref()).await?;
         self.test_npm(&ctx.config, &tv, ctx.pr.as_ref()).await?;
         if let Err(err) = self
             .install_default_packages(&ctx.config, &tv, ctx.pr.as_ref())

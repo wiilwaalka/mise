@@ -398,6 +398,7 @@ impl PythonPlugin {
         if matches!(&tv.request, ToolRequest::Ref { .. }) {
             return Err(eyre!("Ref versions not supported for python"));
         }
+        self.run_hook(ctx, tv, "prebuild").await?;
         ctx.pr.set_message("python-build".into());
         let mut cmd = CmdLineRunner::new(self.python_build_bin())
             .with_pr(ctx.pr.as_ref())
@@ -746,6 +747,7 @@ impl Backend for PythonPlugin {
         } else {
             self.install_compiled(ctx, &tv).await?;
         }
+        self.run_termux_patch(ctx, &tv).await?;
         self.test_python(&ctx.config, &tv, ctx.pr.as_ref()).await?;
         if let Err(e) = self.get_virtualenv(&ctx.config, &tv).await {
             warn!("failed to get virtualenv: {e:#}");

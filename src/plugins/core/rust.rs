@@ -52,6 +52,12 @@ impl RustPlugin {
             cmd = cmd.arg("--default-host").arg(host);
         }
         cmd.execute()?;
+
+        #[cfg(target_os = "linux")]
+        if *env::TERMUX {
+            crate::cmd::patch_if_termux(cargo_home().join("bin"), &[] as &[String]);
+        }
+
         Ok(())
     }
 
@@ -67,7 +73,8 @@ impl RustPlugin {
     }
 
     fn target_triple(&self, tv: &ToolVersion) -> String {
-        format!("{}-{}", tv.version, TARGET)
+        let triple = TARGET.replace("-android", "-gnu");
+        format!("{}-{}", tv.version, triple)
     }
 }
 
@@ -147,6 +154,12 @@ impl Backend for RustPlugin {
             cmd = cmd.arg("--profile").arg(profile);
         }
         cmd.execute()?;
+
+        #[cfg(target_os = "linux")]
+        if *env::TERMUX {
+            let toolchain_dir = rustup_home().join("toolchains").join(self.target_triple(&tv));
+            crate::cmd::patch_if_termux(toolchain_dir, &[] as &[String]);
+        }
 
         file::remove_all(tv.install_path())?;
         file::make_symlink(&cargo_home().join("bin"), &tv.install_path())?;
@@ -353,7 +366,15 @@ const CARGO_BIN: &str = "cargo.exe";
 
 #[cfg(unix)]
 fn rustup_url(_settings: &Settings) -> String {
-    "https://sh.rustup.rs".to_string()
+    if cfg!(target_os = "linux") {
+        let triple = TARGET.replace("-android", "-gnu");
+        format!(
+            "https://static.rust-lang.org/rustup/dist/{}/rustup-init",
+            triple
+        )
+    } else {
+        "https://sh.rustup.rs".to_string()
+    }
 }
 
 #[cfg(windows)]

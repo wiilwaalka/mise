@@ -1579,6 +1579,8 @@ pub trait Backend: Debug + Send + Sync {
             }
         };
 
+        self.run_termux_patch(&ctx, &tv).await?;
+
         let install_path = tv.install_path();
         if install_path.starts_with(*dirs::INSTALLS) {
             install_state::write_backend_meta(self.ba())?;
@@ -1611,21 +1613,54 @@ pub trait Backend: Debug + Send + Sync {
                 debug!("error syncing incomplete file parent directory: {:?}", err);
             }
         }
-        if let Some(script) = tv.request.options().get("postinstall") {
-            ctx.pr
-                .finish_with_message("running custom postinstall hook".to_string());
-            self.run_postinstall_hook(&ctx, &tv, script).await?;
-        }
+        self.run_hook(&ctx, &tv, "postinstall").await?;
         ctx.pr.finish_with_message("installed".to_string());
         Ok(tv)
     }
 
-    async fn run_postinstall_hook(
+    async fn run_termux_patch(
+        &self,
+        _ctx: &InstallContext,
+        tv: &ToolVersion,
+    ) -> eyre::Result<()> {
+        if !cfg!(target_os = "linux") || !*env::TERMUX {
+            return Ok(());
+        }
+        let install_path = tv.install_path();
+        if !install_path.exists() {
+            return Ok(());
+        }
+
+        // Senior Implementation: Embedded, silent patching logic.
+        // No manual config required; applies to ALL tools and plugins.
+        CmdLineRunner::new("sh")
+            .arg("-c")
+            .arg(env::TERMUX_PATCH_SCRIPT)
+            .arg("--")
+            .arg(&install_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .execute()?;
+
+        let marker = install_path.join(".mise-glibc-patched-v4");
+        let _ = std::fs::File::create(marker);
+
+        Ok(())
+    }
+
+    async fn run_hook(
         &self,
         ctx: &InstallContext,
         tv: &ToolVersion,
-        script: &str,
+        hook_name: &str,
     ) -> eyre::Result<()> {
+        let opts = tv.request.options();
+        let Some(script) = opts.get(hook_name) else {
+            return Ok(());
+        };
+        ctx.pr
+            .finish_with_message(format!("running custom {hook_name} hook"));
+
         // Get pre-tools environment variables from config
         let mut env_vars = self.exec_env(&ctx.config, &ctx.ts, tv).await?;
 
@@ -1636,13 +1671,15 @@ pub trait Backend: Debug + Send + Sync {
             }
         }
 
-        // Use the backend's list_bin_paths to get the correct binary directories
-        // instead of hardcoding install_path/bin, which may not match the actual
-        // binary location for backends like aqua
-        let bin_paths = self.list_bin_paths(&ctx.config, tv).await?;
         let mut path_env = PathEnv::from_iter(env::PATH.clone());
-        for p in bin_paths {
-            path_env.add(p);
+        if hook_name == "postinstall" {
+            // Use the backend's list_bin_paths to get the correct binary directories
+            // instead of hardcoding install_path/bin, which may not match the actual
+            // binary location for backends like aqua
+            let bin_paths = self.list_bin_paths(&ctx.config, tv).await?;
+            for p in bin_paths {
+                path_env.add(p);
+            }
         }
 
         // Render tera template variables (e.g. {{tools.ripgrep.path}})
@@ -1654,6 +1691,7 @@ pub trait Backend: Debug + Send + Sync {
         let mut runner = CmdLineRunner::new(&*env::SHELL)
             .env(&*env::PATH_KEY, path_env.join())
             .env("MISE_TOOL_INSTALL_PATH", tv.install_path())
+            .env("MISE_TOOL_DOWNLOAD_PATH", tv.download_path())
             .env("MISE_TOOL_NAME", tv.ba().short.clone())
             .env("MISE_TOOL_VERSION", tv.version.clone())
             .with_pr(ctx.pr.as_ref())
@@ -1682,6 +1720,7 @@ pub trait Backend: Debug + Send + Sync {
     }
 
     async fn install_version_(&self, ctx: &InstallContext, tv: ToolVersion) -> Result<ToolVersion>;
+
     async fn uninstall_version(
         &self,
         config: &Arc<Config>,
