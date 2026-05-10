@@ -55,12 +55,18 @@ impl ErlangPlugin {
 
     async fn update_kerl(&self) -> Result<()> {
         let _lock = self.lock_build_tool();
-        if self.kerl_path().exists() {
-            // TODO: find a way to not have to do this #1209
-            file::remove_all(self.kerl_base_dir())?;
-            return Ok(());
+        if !self.kerl_path().exists() {
+            self.install_kerl().await?;
         }
-        self.install_kerl().await?;
+        // Patch kerl to use TMPDIR instead of hardcoded /tmp (ensure it's patched)
+        if *crate::env::TERMUX {
+            let content = std::fs::read_to_string(&self.kerl_path())?;
+            if content.contains("'/tmp'") {
+                debug!("Patching kerl for Termux: {}", display_path(self.kerl_path()));
+                let patched = content.replace("TMP_DIR=${TMP_DIR:-'/tmp'}", "TMP_DIR=${TMPDIR:-/tmp}");
+                std::fs::write(&self.kerl_path(), patched)?;
+            }
+        }
         let output = cmd!(self.kerl_path(), "update", "releases")
             .env("KERL_BASE_DIR", self.kerl_base_dir())
             .stdout_capture()

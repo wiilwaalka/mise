@@ -275,6 +275,8 @@ fn platform_directory() -> String {
         "xcode".into()
     } else if cfg!(windows) {
         "windows10".into()
+    } else if *crate::env::TERMUX {
+        "ubuntu2204".into()
     } else if let Ok(os_release) = &*os_release::OS_RELEASE {
         let settings = Settings::get();
         let arch = settings.arch();
@@ -301,6 +303,8 @@ fn platform() -> String {
         "osx".to_string()
     } else if cfg!(windows) {
         "windows10".to_string()
+    } else if *crate::env::TERMUX {
+        "ubuntu22.04".to_string()
     } else if let Ok(os_release) = &*os_release::OS_RELEASE {
         if os_release.id == "amzn" {
             format!("amazonlinux{}", os_release.version_id)

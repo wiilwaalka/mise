@@ -307,6 +307,10 @@ impl<'a> CmdLineRunner<'a> {
         cmd.stderr(Stdio::piped());
         cmd.env_remove("LD_PRELOAD");
 
+        if *env::TERMUX && env::var_os("TMPDIR").is_none() {
+            cmd.env("TMPDIR", "/data/data/com.termux/files/usr/tmp");
+        }
+
         Self {
             cmd,
             pr: None,
